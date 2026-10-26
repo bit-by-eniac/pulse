@@ -10,9 +10,15 @@ Pulse does not reimplement video decoding or YouTube. It drives three well-known
 | [mpv](https://mpv.io) | audio playback, seeking, volume | `brew install mpv` / `winget install mpv` / `apt install mpv` |
 | [ffmpeg](https://ffmpeg.org) | decoding video frames (video mode only) | `brew install ffmpeg` / `winget install ffmpeg` / `apt install ffmpeg` |
 
-yt-dlp also needs a JavaScript runtime for YouTube nowadays: install [deno](https://deno.com) (or node).
-The app checks all of this and tells you what is missing. Tools are found in the app data folder, next
-to the executable (also in a `tools/` folder), on `PATH`, and in the usual Homebrew/winget/scoop locations.
+yt-dlp also needs a JavaScript runtime for YouTube nowadays: [deno](https://deno.com), node, bun, or QuickJS
+(`qjs`, used last: tiny, but each lookup takes ~5 s longer). The app checks all of this and tells you what is
+missing. Tools are found in the app data folder, next to the executable (also in a `tools/` folder), on `PATH`,
+and in the usual Homebrew/winget/scoop locations.
+
+The **-full** packages for macOS and Windows carry mpv, ffmpeg and QuickJS, built by `scripts/build-tools.sh`
+with only what Pulse uses (14–16 MB together instead of ~250 MB for the usual builds): ffmpeg decodes H.264 and
+VP9 only, mpv plays sound only (no scripts, no video output) but keeps the OS media controls. Their licences and source links are in
+`LICENSES/` next to them. The Linux packages carry QuickJS only; the `.deb` gets mpv and ffmpeg from the distro.
 
 ## When YouTube breaks
 
@@ -88,8 +94,14 @@ Outputs land in `dist/`.
 
 **Releases:** a push to `main` builds and publishes a release for the version in `Cargo.toml`, unless that
 version has one already: raise the version for a new release. It builds macOS (arm64 + universal dmg),
-Windows x64 (zip) and Linux x86_64 + aarch64 (tar.gz + deb). Actions → **Release** → Run workflow does the
-same by hand (a draft by default), and so does pushing a `v*` tag.
+Windows x64 (zip), each also as -full, and Linux x86_64 + aarch64 (tar.gz + deb). The tools for the -full
+packages are cached until `scripts/build-tools.sh` changes; if they fail to build, the release goes out
+without the -full packages. Actions → **Release** → Run workflow does the same by hand (a draft by
+default), and so does pushing a `v*` tag.
+
+The -full packages by hand: `scripts/build-tools.sh macos-arm64` (and `macos-x86_64`), then
+`scripts/build-macos.sh all full`; on Windows `scripts/build-tools.sh windows-x64` in an MSYS2 UCRT64 shell,
+then `scripts\build-windows.ps1 -Full`.
 
 macOS builds are ad-hoc signed, not notarized. After downloading, if macOS says the app is damaged:
 `xattr -dr com.apple.quarantine /Applications/Pulse.app`. Set `MACOS_SIGN_IDENTITY` to sign properly.

@@ -1,0 +1,2 @@
+# Shell scripts also run on Windows (MSYS2), where git would otherwise check them out with CRLF.
+*.sh text eol=lf

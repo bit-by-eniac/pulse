@@ -10,8 +10,9 @@ use crate::platform::{self, IpcConn};
 use serde_json::Value;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -202,11 +203,8 @@ fn launch(mpv: &Path, extra_args: &[String], volume: f32, muted: bool, endpoint:
         "--idle=yes",
         "--terminal=no",
         "--no-config",
-        "--load-scripts=no",
         "--no-video",
         "--sid=no",
-        "--ytdl=no",
-        "--osc=no",
         "--force-window=no",
         "--audio-display=no",
         "--keep-open=no",
@@ -226,6 +224,9 @@ fn launch(mpv: &Path, extra_args: &[String], volume: f32, muted: bool, endpoint:
         arg.push(endpoint);
         arg
     });
+    if has_scripts(mpv) {
+        cmd.args(SCRIPT_OPTIONS);
+    }
     if let Some(cover) = platform::now_playing_cover().filter(|_| modern) {
         let mut arg = OsString::from("--cover-art-files-append=");
         arg.push(cover);
@@ -272,6 +273,28 @@ fn launch(mpv: &Path, extra_args: &[String], volume: f32, muted: bool, endpoint:
             Err(e)
         }
     }
+}
+
+/// Switch off the scripts mpv runs by itself: the user's, the youtube-dl hook and
+/// the on-screen controller.
+const SCRIPT_OPTIONS: [&str; 3] = ["--load-scripts=no", "--ytdl=no", "--osc=no"];
+
+/// Whether this mpv takes `SCRIPT_OPTIONS`. Without scripting (the -full packages'
+/// mpv) they do not exist, and mpv exits at an unknown option. Tried once per mpv;
+/// only the exit status counts, as Windows' mpv.exe may print nowhere.
+fn has_scripts(mpv: &Path) -> bool {
+    static KNOWN: Mutex<Option<(PathBuf, bool)>> = Mutex::new(None);
+    let mut known = KNOWN.lock().unwrap();
+    if known.as_ref().is_none_or(|(path, _)| path != mpv) {
+        let mut cmd = Command::new(mpv);
+        cmd.arg("--no-config").args(SCRIPT_OPTIONS).arg("--version");
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        platform::quiet(&mut cmd);
+        // In doubt (it did not run), as before: every mpv used to have them.
+        let scripts = cmd.status().map_or(true, |s| s.success());
+        *known = Some((mpv.to_path_buf(), scripts));
+    }
+    known.as_ref().is_none_or(|(_, scripts)| *scripts)
 }
 
 fn parse_event(line: &str) -> Option<PlayerEvent> {

@@ -17,9 +17,10 @@ pub fn runtime_dir() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
 }
 
-/// Distro packages, snaps, Homebrew on Linux, and per-user installs.
+/// Distro packages, snaps, Homebrew on Linux, and per-user installs. The .deb puts
+/// its QuickJS in /usr/lib/pulse-player, out of the way of a distro's own `qjs`.
 pub fn extra_tool_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = ["/usr/local/bin", "/usr/bin", "/snap/bin", "/home/linuxbrew/.linuxbrew/bin"].iter().map(PathBuf::from).collect();
+    let mut dirs: Vec<PathBuf> = ["/usr/local/bin", "/usr/bin", "/snap/bin", "/home/linuxbrew/.linuxbrew/bin", "/usr/lib/pulse-player"].iter().map(PathBuf::from).collect();
     if let Some(home) = dirs::home_dir() {
         dirs.extend([".local/bin", ".deno/bin", ".bun/bin"].map(|d| home.join(d)));
     }

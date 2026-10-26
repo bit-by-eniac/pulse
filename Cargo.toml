@@ -55,4 +55,7 @@ assets = [
   ["packaging/linux/pulse.desktop", "usr/share/applications/", "644"],
   ["assets/icon-256.png", "usr/share/icons/hicolor/256x256/apps/pulse.png", "644"],
   ["assets/icon-512.png", "usr/share/icons/hicolor/512x512/apps/pulse.png", "644"],
+  # QuickJS for yt-dlp, fetched by scripts/build-linux.sh.
+  ["target/tools/qjs", "usr/lib/pulse-player/qjs", "755"],
+  ["target/tools/quickjs-LICENSE", "usr/share/doc/pulse-player/quickjs-LICENSE", "644"],
 ]

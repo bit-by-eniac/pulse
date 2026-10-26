@@ -53,10 +53,55 @@ jobs:
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
 
-  macos:
-    name: macOS (arm64 + universal)
+  # mpv, ffmpeg and QuickJS for the -full packages (scripts/build-tools.sh), kept in
+  # the cache until the script changes. A failure here only leaves those packages out.
+  tools:
+    name: Tools (${{ matrix.target }})
     needs: plan
     if: needs.plan.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-arm64
+            runner: macos-14
+          - target: macos-x86_64
+            runner: macos-14
+          - target: windows-x64
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: dist/tools-${{ matrix.target }}
+          key: tools-${{ matrix.target }}-${{ hashFiles('scripts/build-tools.sh') }}
+      - if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'macOS'
+        run: |
+          brew install meson nasm pkgconf
+          scripts/build-tools.sh ${{ matrix.target }}
+      - if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: >-
+            make diffutils curl tar xz
+            mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-meson mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-zlib mingw-w64-ucrt-x86_64-cppwinrt
+      - if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'Windows'
+        shell: msys2 {0}
+        run: bash scripts/build-tools.sh ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tools-${{ matrix.target }}
+          path: dist/tools-${{ matrix.target }}
+
+  macos:
+    name: macOS (arm64 + universal)
+    needs: [plan, tools]
+    if: always() && needs.plan.outputs.build == 'true'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +109,19 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
-      - run: scripts/build-macos.sh all
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: tools-macos-*
+          path: dist
+      # Artifacts lose the executable bit. Without both tool sets, only the usual packages.
+      - run: |
+          if [[ -f dist/tools-macos-arm64/mpv && -f dist/tools-macos-x86_64/mpv ]]; then
+            chmod +x dist/tools-macos-*/{mpv,ffmpeg,qjs}
+            scripts/build-macos.sh all full
+          else
+            scripts/build-macos.sh all
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: macos
@@ -72,14 +129,24 @@ jobs:
 
   windows:
     name: Windows (x64)
-    needs: plan
-    if: needs.plan.outputs.build == 'true'
+    needs: [plan, tools]
+    if: always() && needs.plan.outputs.build == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: tools-windows-x64
+          path: dist/tools-windows-x64
+      - run: |
+          if (Test-Path dist\tools-windows-x64\mpv.exe) {
+            powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Full
+          } else {
+            powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: windows
@@ -112,6 +179,10 @@ jobs:
 
   publish:
     needs: [plan, macos, windows, linux]
+    # The usual packages must all be there; the -full ones may be missing.
+    if: >-
+      always() && needs.plan.outputs.build == 'true' &&
+      needs.macos.result == 'success' && needs.windows.result == 'success' && needs.linux.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -132,4 +203,4 @@ jobs:
           [[ "$PRERELEASE" == "true" ]] && FLAGS+=(--prerelease)
           ls -la artifacts
           gh release create "$TAG" artifacts/* --title "Pulse $TAG" --target "$GITHUB_SHA" \
-            --notes "Needs mpv, ffmpeg and deno installed; Pulse fetches yt-dlp itself. See the README for setup." "${FLAGS[@]}"
+            --notes "The -full downloads (macOS, Windows) include mpv, ffmpeg and QuickJS: nothing else to install. The others need mpv and ffmpeg; the Linux .deb installs them. Pulse fetches yt-dlp itself. See the README." "${FLAGS[@]}"

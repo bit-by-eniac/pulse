@@ -1,9 +1,11 @@
 # Builds Pulse for Windows and packages it as a .zip.
 #
-#   powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 [-Target x86_64-pc-windows-msvc]
+#   powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 [-Target x86_64-pc-windows-msvc] [-Full]
 #
-# Output: dist\Pulse-<version>-windows-<arch>.zip
-param([string]$Target = "x86_64-pc-windows-msvc")
+# -Full also makes a -full .zip with mpv, ffmpeg and QuickJS in tools\, from
+# dist\tools-windows-<arch> (scripts/build-tools.sh windows-x64, in MSYS2).
+# Output: dist\Pulse-<version>-windows-<arch>[-full].zip
+param([string]$Target = "x86_64-pc-windows-msvc", [switch]$Full)
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
@@ -25,5 +27,20 @@ Copy-Item README.md $stage
 $zip = "dist\Pulse-$version-windows-$arch.zip"
 Remove-Item $zip -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path "$stage\*" -DestinationPath $zip
-Remove-Item $stage -Recurse -Force
 Write-Host "-> $zip"
+
+if ($Full) {
+  # In tools\ next to Pulse.exe, where it looks for them.
+  $tools = "dist\tools-windows-$arch"
+  foreach ($f in "mpv.exe", "ffmpeg.exe", "qjs.exe") {
+    if (-not (Test-Path "$tools\$f")) { throw "missing $tools\${f}: run scripts/build-tools.sh windows-$arch in MSYS2 first" }
+  }
+  New-Item -ItemType Directory -Force "$stage\tools" | Out-Null
+  Copy-Item "$tools\*.exe" "$stage\tools"
+  Copy-Item "$tools\LICENSES" "$stage\tools\LICENSES" -Recurse
+  $fullZip = "dist\Pulse-$version-windows-$arch-full.zip"
+  Remove-Item $fullZip -Force -ErrorAction SilentlyContinue
+  Compress-Archive -Path "$stage\*" -DestinationPath $fullZip
+  Write-Host "-> $fullZip"
+}
+Remove-Item $stage -Recurse -Force

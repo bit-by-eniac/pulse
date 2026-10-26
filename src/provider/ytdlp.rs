@@ -70,14 +70,15 @@ impl YtDlp {
     }
 
     /// yt-dlp needs a JS runtime for YouTube. It only enables deno by default,
-    /// so point it at node/bun when those are what the user has.
+    /// so point it at node/bun when those are what the user has, or else at the
+    /// QuickJS the full packages carry (tiny, but lookups take ~5 s longer).
     fn js_runtime_args() -> Vec<String> {
         if platform::find_executable("deno").is_some() {
             return Vec::new();
         }
-        for name in ["node", "bun"] {
+        for (name, runtime) in [("node", "node"), ("bun", "bun"), ("qjs", "quickjs")] {
             if let Some(path) = platform::find_executable(name) {
-                return vec!["--js-runtimes".into(), format!("{name}:{}", path.display())];
+                return vec!["--js-runtimes".into(), format!("{runtime}:{}", path.display())];
             }
         }
         Vec::new()
@@ -238,7 +239,7 @@ impl Provider for YtDlp {
         if self.path.read().unwrap().as_ref() == Some(&legacy) {
             warnings.push("This yt-dlp build takes seconds to start on every request. Update yt-dlp to switch to the fast one.".to_string());
         }
-        if ["deno", "node", "bun"].iter().all(|n| platform::find_executable(n).is_none()) {
+        if ["deno", "node", "bun", "qjs"].iter().all(|n| platform::find_executable(n).is_none()) {
             warnings.push(
                 "YouTube needs a JavaScript runtime for yt-dlp. Install deno (deno.com) or node, or only low quality streams may work."
                     .to_string(),
