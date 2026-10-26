@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Pulse
+GenericName=YouTube Player
+Comment=Tiny YouTube audio/video player
+Exec=pulse %u
+Icon=pulse
+Terminal=false
+Categories=AudioVideo;Audio;Video;Player;
+StartupWMClass=pulse

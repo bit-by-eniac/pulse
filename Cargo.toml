@@ -1,0 +1,58 @@
+[package]
+name = "pulse"
+version = "0.1.0"
+edition = "2021"
+description = "A tiny YouTube audio/video player"
+license = "MIT"
+rust-version = "1.88"
+
+[dependencies]
+# "clipboard": without it egui only has an in-app clipboard (no pasting links from a browser, no Share).
+eframe = { version = "0.37", default-features = false, features = ["glow", "x11", "wayland", "clipboard"] }
+# egui's fonts, minus its 309 KB monospace face (see theme.rs).
+epaint_default_fonts = "0.37"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "7"
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+memmap2 = "0.9"
+bytemuck = { version = "1", features = ["extern_crate_alloc"] }
+
+# HTTPS: macOS and Windows have a TLS stack and certificate store to use; Linux has no
+# single system TLS library, so it gets rustls.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["native-tls-no-default", "gzip"] }
+[target.'cfg(not(any(target_os = "macos", windows)))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Linux .deb (cargo deb). The runtime tools are normal distro packages.
+[package.metadata.deb]
+name = "pulse-player"
+maintainer = "Pulse contributors"
+section = "sound"
+priority = "optional"
+depends = "$auto, mpv, ffmpeg"
+recommends = "yt-dlp, deno | nodejs"
+extended-description = "Tiny YouTube audio/video player. Playback runs through mpv (audio) and ffmpeg (video frames); YouTube lookups run through yt-dlp."
+assets = [
+  ["target/release/pulse", "usr/bin/", "755"],
+  ["packaging/linux/pulse.desktop", "usr/share/applications/", "644"],
+  ["assets/icon-256.png", "usr/share/icons/hicolor/256x256/apps/pulse.png", "644"],
+  ["assets/icon-512.png", "usr/share/icons/hicolor/512x512/apps/pulse.png", "644"],
+]
