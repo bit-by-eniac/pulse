@@ -187,6 +187,8 @@ jobs:
           FLAGS=()
           [[ "$DRAFT" == "true" ]] && FLAGS+=(--draft)
           [[ "$PRERELEASE" == "true" ]] && FLAGS+=(--prerelease)
-          ls -la artifacts
-          gh release create "$TAG" artifacts/* --title "Pulse $TAG" --target "$GITHUB_SHA" \
+          # Only the packages: the downloads also hold the tools-* artifacts (bare binaries, LICENSES/).
+          PACKAGES=(artifacts/*.dmg artifacts/*.zip artifacts/*.tar.gz artifacts/*.deb)
+          ls -la "${PACKAGES[@]}"
+          gh release create "$TAG" "${PACKAGES[@]}" --title "Pulse $TAG" --target "$GITHUB_SHA" \
             --notes "macOS: apple-silicon (M1 and later) or intel. The macOS and Windows downloads carry everything Pulse needs; the Linux .deb installs mpv and ffmpeg with it. Pulse fetches yt-dlp itself. See the README." "${FLAGS[@]}"
