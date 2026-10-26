@@ -196,9 +196,17 @@ if [[ $OS == macos ]]; then
   MPV_ARGS+=(-Dcocoa=enabled -Dswift-build=enabled -Dmacos-media-player=enabled -Dcoreaudio=enabled -Davfoundation=enabled)
   [[ "$(uname -m)" != "$ARCH" ]] && MPV_ARGS+=(-Dswift-flags="-target $ARCH-apple-macos$MIN")
 else
-  MPV_ARGS+=(-Dwasapi=enabled -Dwin32-smtc=enabled -Dwin32-threads=enabled)
+  # The media controls' std::format needs a std::string constructor that GCC 16's
+  # static libstdc++ lacks; with assertions on, std::string is compiled in instead.
+  MPV_ARGS+=(-Dwasapi=enabled -Dwin32-smtc=enabled -Dwin32-threads=enabled -Dcpp_args=-D_GLIBCXX_ASSERTIONS)
 fi
-meson_build "$mpv" "${MPV_ARGS[@]}"
+if ! (meson_build "$mpv" "${MPV_ARGS[@]}"); then
+  # Rather mpv without the Windows media controls than no package at all.
+  [[ $OS == windows ]] || exit 1
+  echo "::warning::mpv's Windows media controls did not build; this mpv has none"
+  rm -rf "$mpv/build"
+  meson_build "$mpv" "${MPV_ARGS[@]/-Dwin32-smtc=enabled/-Dwin32-smtc=disabled}"
+fi
 cp "$PREFIX/bin/mpv$EXE" "$OUT/mpv$EXE"
 
 echo "== $TARGET: QuickJS"
