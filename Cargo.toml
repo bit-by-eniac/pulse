@@ -17,7 +17,6 @@ serde_json = "1"
 dirs = "7"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 memmap2 = "0.9"
-bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 
 # HTTPS: macOS and Windows have a TLS stack and certificate store to use; Linux has no
 # single system TLS library, so it gets rustls.
@@ -28,8 +27,12 @@ ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] 
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# Already there for winit: keeps the app out of App Nap while video plays (platform/macos.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString"] }
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Power", "Win32_System_Threading"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

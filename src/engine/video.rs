@@ -1,5 +1,7 @@
 //! Video frames: an `ffmpeg` child decodes the chosen stream, scales it to the
-//! size it will be shown at and writes raw RGBA frames to a pipe. A thread
+//! size it will be shown at and writes raw NV12 frames to a pipe (the UI turns
+//! them into colour on the graphics chip). Where the chip can, it also decodes
+//! and scales (`platform::gpu_video`); the CPU then only copies frames. A thread
 //! releases each frame when the playback clock (driven by the audio) reaches it.
 //!
 //! A new size or stream needs a new decoder, which takes a second or two to
@@ -9,7 +11,7 @@
 use super::clock::Clock;
 use super::relay::{Relay, Source};
 use super::Waker;
-use crate::platform;
+use crate::platform::{self, GpuVideo};
 use crate::provider::Header;
 use std::io::Read;
 use std::path::Path;
@@ -19,16 +21,23 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const FPS: f64 = 30.0;
-/// Frame buffers kept for reuse (8 MB each at 1080p). Two cover the decoder and
+/// Frame buffers kept for reuse (3 MB each at 1080p). Two cover the decoder and
 /// the UI taking turns.
 const MAX_SPARE: usize = 2;
 
 pub struct Frame {
     pub width: usize,
     pub height: usize,
-    /// One pixel per element, RGBA bytes in memory order. Whole `u32`s keep the
-    /// buffer aligned, so the UI can hand it to the GPU without copying it.
-    pub pixels: Vec<u32>,
+    /// NV12, BT.709 limited range as YouTube's streams are: a byte of brightness
+    /// per pixel, then a byte each of U and V, interleaved, per 2x2 pixels.
+    pub pixels: Vec<u8>,
+}
+
+impl Frame {
+    /// Bytes of an NV12 frame of this size (both even).
+    pub fn bytes(width: usize, height: usize) -> usize {
+        width * height * 3 / 2
+    }
 }
 
 /// Hands the newest frame from the decoder thread to the UI thread.
@@ -40,7 +49,7 @@ pub struct FrameSlot {
 #[derive(Default)]
 struct SlotInner {
     latest: Option<Frame>,
-    spare: Vec<Vec<u32>>,
+    spare: Vec<Vec<u8>>,
     /// Session whose frames are shown; older sessions are ignored from then on.
     owner: u64,
     /// No decoder will run for a while: buffers handed back are freed, not kept.
@@ -48,7 +57,7 @@ struct SlotInner {
 }
 
 impl SlotInner {
-    fn keep(&mut self, buf: Vec<u32>) {
+    fn keep(&mut self, buf: Vec<u8>) {
         if !self.released && self.spare.len() < MAX_SPARE {
             self.spare.push(buf);
         }
@@ -61,7 +70,7 @@ impl FrameSlot {
     }
 
     /// Returns a buffer so the decoder can reuse it instead of allocating.
-    pub fn recycle(&self, buf: Vec<u32>) {
+    pub fn recycle(&self, buf: Vec<u8>) {
         self.inner.lock().unwrap().keep(buf);
     }
 
@@ -69,7 +78,7 @@ impl FrameSlot {
         self.inner.lock().unwrap().latest = None;
     }
 
-    /// Frees the frame and the spare buffers (8 MB each at 1080p), for when video
+    /// Frees the frame and the spare buffers (3 MB each at 1080p), for when video
     /// stops for a while: audio mode, hidden, the queue ran out. The next decoder
     /// allocates afresh.
     pub fn release(&self) {
@@ -91,7 +100,7 @@ impl FrameSlot {
         true
     }
 
-    fn buffer(&self, len: usize) -> Vec<u32> {
+    fn buffer(&self, len: usize) -> Vec<u8> {
         let mut inner = self.inner.lock().unwrap();
         while let Some(mut buf) = inner.spare.pop() {
             if buf.len() == len {
@@ -116,6 +125,8 @@ pub struct Params<'a> {
     /// Fetches the file (of this many bytes) for ffmpeg, see `relay`; `None`:
     /// ffmpeg reads the link itself.
     pub relay: Option<(&'a Relay, u64)>,
+    /// Decode and scale on the graphics chip (see `gpu_ready`).
+    pub gpu: Option<&'a GpuVideo>,
 }
 
 pub struct VideoSession {
@@ -125,9 +136,12 @@ pub struct VideoSession {
     frames: Arc<AtomicU64>,
     pub track_id: String,
     pub stream_height: u32,
-    /// The stream decoded (its link) and its bitrate.
+    /// The stream decoded (its link), its bitrate and codec.
     pub stream_url: String,
     pub kbps: u32,
+    pub codec: String,
+    /// Decoded on the graphics chip.
+    pub gpu: bool,
     pub width: u32,
     /// Where in the track its frames begin.
     pub start: f64,
@@ -153,9 +167,14 @@ impl VideoSession {
     ) -> Result<VideoSession, String> {
         let mut cmd = Command::new(params.ffmpeg);
         cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin"]);
-        // Each decoder thread holds frames of its own. H.264 needs few to keep up;
-        // VP9 and AV1 are heavier to decode.
-        cmd.args(["-threads", if params.codec.starts_with("avc") { "2" } else { "4" }]);
+        if let Some(gpu) = params.gpu {
+            // The chip does the work; one thread hands it the data.
+            cmd.args(["-hwaccel", gpu.hwaccel, "-hwaccel_output_format", gpu.frames, "-threads", "1"]);
+        } else {
+            // Each decoder thread holds frames of its own. H.264 needs few to keep up;
+            // VP9 and AV1 are heavier to decode.
+            cmd.args(["-threads", if params.codec.starts_with("avc") { "2" } else { "4" }]);
+        }
         let source = params.relay.filter(|_| !params.live).map(|(relay, size)| relay.open(params.url, params.headers, params.kbps, size, false));
         let url = source.as_ref().map_or(params.url, |s| s.url());
         if source.is_some() {
@@ -191,14 +210,18 @@ impl VideoSession {
         if !params.live && params.start > 0.5 {
             cmd.args(["-ss", &format!("{:.3}", params.start)]);
         }
-        cmd.args(["-i", url, "-an", "-sn", "-dn", "-vf"])
-            .arg(format!("fps={FPS},scale={}:{}:flags=fast_bilinear", params.width, params.height))
-            .args(["-pix_fmt", "rgba"]);
+        let (w, h) = (params.width, params.height);
+        let filter = match params.gpu {
+            // Scaled on the chip too, and copied out as it is (10-bit made 8-bit).
+            Some(gpu) => format!("fps={FPS},{}=w={w}:h={h},hwdownload,format=nv12|p010le,format=nv12", gpu.scale),
+            None => format!("fps={FPS},scale={w}:{h}:flags=fast_bilinear"),
+        };
+        cmd.args(["-i", url, "-an", "-sn", "-dn", "-vf", &filter, "-pix_fmt", "nv12"]);
         // 7.0+ runs its stages on threads with queues between them, which is also
         // when `-thread_queue_size` is accepted for an output.
         if version_at_least(params.ffmpeg, 7) {
             // Frames are read at playback speed; without a limit ffmpeg 7+ queues
-            // several finished frames (8 MB each at 1080p) ahead of the pipe.
+            // several finished frames (3 MB each at 1080p) ahead of the pipe.
             cmd.args(["-thread_queue_size", "1"]);
         }
         cmd.args(["-f", "rawvideo", "-"])
@@ -228,8 +251,8 @@ impl VideoSession {
                 // For live streams there is no shared timeline: show frames as they come.
                 let mut live_origin: Option<f64> = None;
                 'frames: loop {
-                    let mut buf = slot.buffer(w * h);
-                    if stdout.read_exact(bytemuck::cast_slice_mut(&mut buf)).is_err() {
+                    let mut buf = slot.buffer(Frame::bytes(w, h));
+                    if stdout.read_exact(&mut buf).is_err() {
                         break;
                     }
                     if index == 0 {
@@ -275,6 +298,8 @@ impl VideoSession {
             stream_height,
             stream_url: params.url.to_string(),
             kbps: params.kbps,
+            codec: params.codec.to_string(),
+            gpu: params.gpu.is_some(),
             width: params.width,
             start: params.start,
             started,
@@ -338,6 +363,29 @@ impl VideoSession {
     pub fn frames_shown(&self) -> u64 {
         self.frames.load(Ordering::Relaxed)
     }
+}
+
+/// Whether this ffmpeg can decode and scale on the chip as `gpu` says: not every
+/// build has the hardware decoders and filters. Asked once per ffmpeg.
+pub fn gpu_ready(ffmpeg: &Path, gpu: &GpuVideo) -> bool {
+    static KNOWN: Mutex<Option<(std::path::PathBuf, String)>> = Mutex::new(None);
+    let mut known = KNOWN.lock().unwrap();
+    if known.as_ref().is_none_or(|(path, _)| path != ffmpeg) {
+        let mut lists = String::new();
+        for list in ["-hwaccels", "-filters"] {
+            let mut cmd = Command::new(ffmpeg);
+            cmd.args(["-hide_banner", list]).stdin(Stdio::null()).stderr(Stdio::null());
+            platform::quiet(&mut cmd);
+            if let Ok(out) = cmd.output() {
+                lists.push_str(&String::from_utf8_lossy(&out.stdout));
+            }
+        }
+        *known = Some((ffmpeg.to_path_buf(), lists));
+    }
+    // One per line, the name first ("-hwaccels") or second ("-filters": flags first).
+    let lists = known.as_ref().map_or("", |(_, l)| l.as_str());
+    let has = |name: &str| lists.lines().any(|line| line.split_whitespace().take(2).any(|w| w == name));
+    has(gpu.hwaccel) && has(gpu.scale) && has("hwdownload")
 }
 
 /// Whether this ffmpeg's major version is at least `major`. Its banner is asked

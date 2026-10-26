@@ -11,7 +11,7 @@ mod mpv;
 mod relay;
 mod video;
 
-pub use video::FrameSlot;
+pub use video::{Frame, FrameSlot};
 
 use crate::config::{Config, Mode, Repeat};
 use crate::platform;
@@ -249,6 +249,7 @@ pub fn start(provider: Arc<dyn Provider>, config: &Config, waker: Waker) -> Engi
         video_retry: None,
         video_failures: 0,
         video_failed: None,
+        gpu_refused: Vec::new(),
         target: None,
         target_changed: Instant::now(),
         hidden_since: None,
@@ -278,6 +279,7 @@ pub fn start(provider: Arc<dyn Provider>, config: &Config, waker: Waker) -> Engi
         fell_behind: None,
         head_start: false,
         ceiling: None,
+        height_cap: None,
         lagging: None,
         stats_at: Instant::now(),
         rng: std::time::SystemTime::now()
@@ -352,6 +354,8 @@ struct Engine {
     video_failures: u32,
     /// Track id whose video failed, so we do not retry in a loop.
     video_failed: Option<String>,
+    /// Codecs the graphics chip would not decode after all: software from then on.
+    gpu_refused: Vec<String>,
     target: Option<(u32, u32)>,
     target_changed: Instant,
     hidden_since: Option<Instant>,
@@ -404,6 +408,9 @@ struct Engine {
     head_start: bool,
     /// Most bit/s a picture kept up with (see `update_ceiling`), and since when.
     ceiling: Option<(f64, Instant)>,
+    /// Tallest stream to decode after one the computer could not keep up with
+    /// (Auto only), and since when.
+    height_cap: Option<(u32, Instant)>,
     /// Since when the picture has been falling behind with its data there.
     lagging: Option<Instant>,
     stats_at: Instant,
@@ -1393,7 +1400,8 @@ impl Engine {
         };
         let (track_id, live, stream, size_height) = {
             let r = self.current.as_ref().unwrap();
-            let want = abr::choose_video(&r.video, self.quality, th, pick);
+            let capped = self.height_cap.filter(|_| self.quality.is_none()).map_or(th, |(h, _)| th.min(h));
+            let want = abr::choose_video(&r.video, self.quality, capped, pick);
             let full = abr::choose_video(&r.video, self.quality, th, Some(f64::INFINITY));
             (r.track.id.clone(), r.track.live, r.video[want].clone(), r.video[full].height)
         };
@@ -1411,6 +1419,10 @@ impl Engine {
         w &= !1;
         h &= !1;
 
+        // How long a decoder takes to deliver its first frame: longer on a busy computer.
+        if let Some(t) = self.video.as_ref().and_then(|v| v.startup()) {
+            self.video_startup = t;
+        }
         // A replacement decoder takes over once its frames are on screen. One that
         // dies or never catches up is dropped, and the current one carries on.
         if let Some(next) = &self.video_next {
@@ -1426,6 +1438,9 @@ impl Engine {
                     self.last_up = Some(Instant::now());
                 }
                 self.publish();
+            } else if self.gpu_failed(next) {
+                self.gpu_refused.push(next.codec.clone());
+                self.video_next = None;
             } else if next.finished() || next.refused() {
                 self.video_next = None;
                 self.video_retry = Some(Instant::now());
@@ -1483,6 +1498,15 @@ impl Engine {
                 }
             }
         }
+        // A first picture set to begin far ahead on the lookup's guess of the line
+        // (a slow lookup is as often a busy computer as a slow line): once the line
+        // is measured and has it begin much sooner, it starts again from there.
+        if let Some(cur) = &self.video {
+            let ahead = cur.start - now;
+            if cur.frames_shown() == 0 && ahead > 5.0 && self.meter.estimate().is_some() && !self.paused && self.lead(&stream, budget, true, false) < ahead - 5.0 {
+                self.restart_video = true;
+            }
+        }
         if self.video.as_ref().is_some_and(|v| v.behind(now).is_some_and(|b| b > 1.0)) {
             self.fell_behind = Some(Instant::now());
         } else if self.fell_behind.is_none_or(|t| t.elapsed() > RESYNC_RESET) {
@@ -1497,9 +1521,13 @@ impl Engine {
             cur.set_standby(fetching && spare);
         }
 
+        if let Some(session) = self.video.as_ref().filter(|s| self.gpu_failed(s)) {
+            self.gpu_refused.push(session.codec.clone());
+            self.restart_video = true;
+        }
         // A decoder that died without showing anything, or could not be replaced
         // after it died: do not retry in a loop.
-        if let Some(session) = &self.video {
+        if let Some(session) = self.video.as_ref().filter(|_| !self.restart_video) {
             let dead = session.finished() && self.video_next.is_none();
             if dead && (session.frames_shown() == 0 || self.video_failures >= VIDEO_ATTEMPTS) {
                 self.video = None;
@@ -1558,6 +1586,7 @@ impl Engine {
         if stream.size.is_some() {
             self.ensure_relay();
         }
+        let gpu = platform::gpu_video(&stream.codec).filter(|gpu| !self.gpu_refused.contains(&stream.codec) && video::gpu_ready(&ffmpeg, gpu));
         self.video_session += 1;
         self.switched = Some(Instant::now());
         let result = VideoSession::start(
@@ -1572,6 +1601,7 @@ impl Engine {
                 codec: &stream.codec,
                 kbps: stream.bitrate,
                 relay: self.relay.as_ref().zip(stream.size),
+                gpu: gpu.as_ref(),
             },
             self.video_session,
             track_id.clone(),
@@ -1590,6 +1620,13 @@ impl Engine {
             }
         }
         self.publish();
+    }
+
+    /// A decoder on the graphics chip that ended without a frame, although its data
+    /// came and the track goes on: the chip refused the stream (an unusual profile,
+    /// or a codec it does not decode after all).
+    fn gpu_failed(&self, session: &VideoSession) -> bool {
+        session.gpu && session.finished() && session.frames_shown() == 0 && !session.refused() && !self.near_end()
     }
 
     /// How far ahead of playback a decoder for `stream` starts: at the point playback
@@ -1619,7 +1656,12 @@ impl Engine {
                 (Some(all), Some(video)) => sound / all + (RESYNC_HEADER_BITS + rate * FRAGMENT / 2.0) / video.max(rate * 0.25),
                 _ => 0.0,
             };
-            if wait < 3.0 { 0.0 } else { wait.min(MAX_RESYNC_LEAD) }
+            // ffmpeg itself takes a moment, seconds on a busy computer; frames that
+            // come out late are dropped until it catches up, so start where playback
+            // will be by then.
+            let ready = self.video_startup.as_secs_f64() * 1.2;
+            let ready = if ready < 1.5 { 0.0 } else { ready.min(8.0) };
+            if wait < 3.0 { ready } else { wait.min(MAX_RESYNC_LEAD).max(ready) }
         } else {
             // Its first frame needs the fragment that holds the start point.
             let first = if line.is_some() { fetch(FRAGMENT).min(MAX_RESYNC_LEAD) } else { 0.0 };
@@ -1653,33 +1695,47 @@ impl Engine {
         }
     }
 
-    /// A picture that keeps falling behind although its data is there (a decoder
-    /// that cannot keep up, or HLS, where the data is not seen), or for want of
-    /// data on a line that should carry its stream (a passage that needs more than
-    /// the stream's average), caps the bitrate below its stream's for a while.
+    /// A picture that keeps falling behind for want of data on a line that should
+    /// carry its stream (a passage that needs more than the stream's average) caps
+    /// the bitrate below its stream's for a while. One that falls behind although
+    /// its data is there (a computer too busy to decode it in time, or HLS, where the
+    /// data is not seen) caps the height instead: on Auto the next smaller picture,
+    /// in H.264 where there is one, which is quicker to decode than a smaller VP9 of
+    /// the same height.
     fn update_ceiling(&mut self) {
         if self.ceiling.is_some_and(|(_, t)| t.elapsed() > CEILING_FOR) {
             self.ceiling = None;
         }
+        if self.height_cap.is_some_and(|(_, t)| t.elapsed() > CEILING_FOR) {
+            self.height_cap = None;
+        }
         let kbps = self.current.as_ref().and_then(|r| r.audio.get(self.audio_index)).map_or(0, |a| a.bitrate);
         let line = abr::video_budget(self.line_estimate(), kbps, self.audio.done);
         let held = self.hold.load(Ordering::Relaxed);
-        let lagging = self.video.as_ref().is_some_and(|cur| {
+        let (slow, starved) = self.video.as_ref().filter(|cur| cur.frames_shown() > 0).map_or((false, false), |cur| {
             let behind = cur.behind(self.clock.now()).unwrap_or(0.0);
             let fed = cur.buffered().is_none_or(|b| b > 3.0);
             let carried = !held && cur.buffered().is_some_and(|b| b < 1.0) && line.is_some_and(|l| l >= cur.kbps as f64 * 1000.0);
-            cur.frames_shown() > 0 && (fed && behind > 2.0 || carried && behind > 1.0)
+            (fed && behind > 2.0, carried && behind > 1.0)
         });
-        if !lagging || self.paused || self.video_next.is_some() {
+        if !(slow || starved) || self.paused || self.video_next.is_some() {
             self.lagging = None;
             return;
         }
         if self.lagging.get_or_insert_with(Instant::now).elapsed() >= Duration::from_secs(2) {
-            let most = self.video.as_ref().map_or(0.0, |v| v.kbps as f64 * 1000.0 * 0.9);
-            if self.ceiling.is_none_or(|(c, _)| most < c) {
-                self.ceiling = Some((most, Instant::now()));
-            }
             self.lagging = None;
+            let Some(cur) = &self.video else { return };
+            if slow {
+                let below = self.current.as_ref().and_then(|r| r.video.iter().map(|v| v.height).filter(|&h| h < cur.stream_height).max());
+                if let Some(h) = below.filter(|&h| self.height_cap.is_none_or(|(c, _)| h < c)) {
+                    self.height_cap = Some((h, Instant::now()));
+                }
+            } else {
+                let most = cur.kbps as f64 * 1000.0 * 0.9;
+                if self.ceiling.is_none_or(|(c, _)| most < c) {
+                    self.ceiling = Some((most, Instant::now()));
+                }
+            }
         }
     }
 

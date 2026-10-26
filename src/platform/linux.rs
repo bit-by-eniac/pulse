@@ -52,6 +52,14 @@ pub fn tls_config() -> ureq::tls::TlsConfig {
     ureq::tls::TlsConfig::default()
 }
 
+/// Screen savers are held off over D-Bus, per desktop; not done.
+pub fn keep_awake(_on: bool) {}
+
+/// Software decoding: VA-API would need setting up per graphics driver.
+pub fn gpu_video(_codec: &str) -> Option<super::GpuVideo> {
+    None
+}
+
 /// mpv has no media-controls integration on Linux, so it needs no artwork.
 pub fn now_playing_cover() -> Option<PathBuf> {
     None

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the tools the "full" packages carry, cut down to what Pulse uses:
 #   ffmpeg  decodes the picture: H.264 and VP9 from MP4, WebM and HLS (no AV1,
-#           which Pulse only takes when a video has nothing else)
+#           which Pulse only takes when a video has nothing else); on macOS on
+#           the graphics chip where it can
 #   mpv     plays the sound, with the OS media controls (Now Playing, media keys);
 #           no video output, scripts or subtitles
 #   qjs     QuickJS-ng, the JavaScript engine yt-dlp needs for YouTube
@@ -151,9 +152,15 @@ ffmpeg_build() { # <dir> <configure args...>
 echo "== $TARGET: ffmpeg (picture)"
 ff=$(unpack "${FFMPEG[@]}")
 mv "$ff" "$ff-picture"
+# On macOS the graphics chip decodes and scales (VideoToolbox) where it can.
+PICTURE=()
+# shellcheck disable=SC2054 # the commas are part of the options
+[[ $OS == macos ]] && PICTURE=(--enable-videotoolbox --enable-hwaccel=h264_videotoolbox,vp9_videotoolbox
+  --enable-filter=scale_vt,hwdownload)
 ffmpeg_build "$ff-picture" --disable-swresample \
   --enable-decoder=h264,vp9 --enable-parser=h264,vp9 --enable-bsf=vp9_superframe_split \
-  --enable-filter=fps,scale,format,null --enable-encoder=rawvideo --enable-muxer=rawvideo
+  --enable-filter=fps,scale,format,null --enable-encoder=rawvideo --enable-muxer=rawvideo \
+  ${PICTURE[@]+"${PICTURE[@]}"}
 EXE=""; [[ $OS == windows ]] && EXE=.exe
 cp "$ff-picture/ffmpeg$EXE" "$OUT/ffmpeg$EXE"
 
@@ -185,7 +192,8 @@ echo "== $TARGET: mpv"
 mpv=$(unpack "${MPV[@]}")
 MPV_ARGS=(-Dlibmpv=false -Dcplayer=true -Dbuild-date=false -Dgl=disabled -Dlua=disabled -Dmanpage-build=disabled)
 if [[ $OS == macos ]]; then
-  MPV_ARGS+=(-Dcocoa=enabled -Dswift-build=enabled -Dmacos-media-player=enabled -Dcoreaudio=enabled)
+  # AVFoundation: mpv's fallback when Core Audio refuses a device (AirPods on macOS 27).
+  MPV_ARGS+=(-Dcocoa=enabled -Dswift-build=enabled -Dmacos-media-player=enabled -Dcoreaudio=enabled -Davfoundation=enabled)
   [[ "$(uname -m)" != "$ARCH" ]] && MPV_ARGS+=(-Dswift-flags="-target $ARCH-apple-macos$MIN")
 else
   MPV_ARGS+=(-Dwasapi=enabled -Dwin32-smtc=enabled -Dwin32-threads=enabled)

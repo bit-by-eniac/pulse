@@ -2,7 +2,7 @@
 
 <h1 align="center">Pulse</h1>
 
-<p align="center">A tiny YouTube player. One ~3.5 MB app, no browser.</p>
+<p align="center">A tiny YouTube player. About 10 MB with everything it needs, no browser.</p>
 
 - Search, or paste any YouTube link
 - Video or audio only; the quality follows your connection
@@ -11,14 +11,11 @@
 
 ## Install
 
-Download Pulse from [Releases](../../releases/latest).
+Download Pulse from [Releases](../../releases/latest). Nothing else to install: Pulse fetches yt-dlp by itself.
 
-- **macOS, Windows:** take the **-full** download. Everything it needs is inside.
-- **Linux:** the `.deb` installs what it needs: `sudo apt install ./pulse-player_*.deb`.
-
-The other downloads need mpv and ffmpeg (`brew install mpv ffmpeg`, `winget install mpv` and `winget install ffmpeg`,
-`sudo apt install mpv ffmpeg`), and on macOS and Windows also [deno](https://deno.com). With deno installed, videos
-start a few seconds sooner in any download. Pulse fetches yt-dlp by itself.
+- **macOS:** `…-macos-apple-silicon.dmg` for M1 and later, `…-macos-intel.dmg` for older Macs.
+- **Windows:** `…-windows-x64.zip`. Unzip it anywhere and run `Pulse.exe`.
+- **Linux:** `sudo apt install ./pulse-player_*.deb` (it brings mpv and ffmpeg). The `.tar.gz` needs them installed.
 
 macOS says the app is damaged? It isn't notarized: run `xattr -dr com.apple.quarantine /Applications/Pulse.app`.
 

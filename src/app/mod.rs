@@ -7,6 +7,7 @@
 mod browse;
 mod controls;
 mod icons;
+mod picture;
 mod playing;
 mod settings;
 mod signin;
@@ -18,7 +19,7 @@ use crate::config::{Config, Mode};
 use crate::engine::{self, Cmd, EngineHandle, PlaybackState, Status, Tools};
 use crate::platform;
 use crate::provider::{Container, Health, Input, Listing, Provider, ProviderError, SearchItem, SearchKind, Track};
-use eframe::egui::{self, vec2, Color32, Id, Key, Rect, TextureHandle, TextureOptions, Ui, ViewportCommand};
+use eframe::egui::{self, vec2, Color32, Id, Key, Rect, Ui, ViewportCommand};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -98,10 +99,10 @@ pub struct PulseApp {
     args_text: String,
     sign_in: Option<signin::SignInDialog>,
 
-    video_tex: Option<TextureHandle>,
-    /// The frame last handed to `video_tex`, to reuse its buffer.
-    video_pixels: Option<Arc<egui::ColorImage>>,
+    picture: picture::Picture,
     video_track: Option<String>,
+    /// `platform::keep_awake` is on.
+    awake: bool,
     /// Where the picture was drawn this frame, in physical pixels.
     frame_target: Option<(u32, u32)>,
     sent_target: Option<(u32, u32)>,
@@ -153,9 +154,9 @@ impl PulseApp {
             health: None,
             updating: false,
             update_message: None,
-            video_tex: None,
-            video_pixels: None,
+            picture: picture::Picture::default(),
             video_track: None,
+            awake: false,
             frame_target: None,
             sent_target: None,
             last_title: String::new(),
@@ -325,29 +326,23 @@ impl PulseApp {
 
     fn upload_video_frame(&mut self, ctx: &egui::Context, state: &PlaybackState) {
         let current = state.current().map(|t| t.id.clone());
+        // Frames' buffers go back to the decoder once the graphics chip has them,
+        // so playback reuses a few buffers instead of allocating one per frame.
+        let mut done = Vec::new();
         if self.video_track != current || state.mode != Mode::Video {
-            self.video_tex = None;
+            done = self.picture.clear();
             self.video_track = current;
         }
-        // The last frame's pixels go back to the decoder once egui has uploaded them,
-        // so playback reuses a few buffers instead of allocating one per frame.
-        if let Some(Ok(image)) = self.video_pixels.take().map(Arc::try_unwrap) {
-            self.engine.frames().recycle(bytemuck::allocation::cast_vec(image.pixels));
+        if let Some(frame) = self.engine.frames().take() {
+            if state.mode == Mode::Video {
+                done.extend(self.picture.set(ctx, frame));
+            } else {
+                done.push(frame.pixels);
+            }
         }
-        let Some(frame) = self.engine.frames().take() else { return };
-        if state.mode != Mode::Video {
-            self.engine.frames().recycle(frame.pixels);
-            return;
+        for buf in done {
+            self.engine.frames().recycle(buf);
         }
-        let size = [frame.width, frame.height];
-        let image = Arc::new(egui::ColorImage::new(size, bytemuck::allocation::cast_vec(frame.pixels)));
-        match self.video_tex.as_mut() {
-            // Same size: update the texture in place instead of making a new one.
-            Some(tex) if tex.size() == size => tex.set_partial([0, 0], image.clone(), TextureOptions::LINEAR),
-            Some(tex) => tex.set(image.clone(), TextureOptions::LINEAR),
-            None => self.video_tex = Some(ctx.load_texture("video", image.clone(), TextureOptions::LINEAR)),
-        }
-        self.video_pixels = Some(image);
     }
 
     fn sync_window(&mut self, ctx: &egui::Context, state: &PlaybackState) {
@@ -472,6 +467,13 @@ impl PulseApp {
         }
     }
 
+    fn keep_awake(&mut self, on: bool) {
+        if on != self.awake {
+            platform::keep_awake(on);
+            self.awake = on;
+        }
+    }
+
     fn report_video_target(&mut self, ctx: &egui::Context) {
         let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
         let target = if minimized { None } else { self.frame_target };
@@ -528,6 +530,7 @@ impl eframe::App for PulseApp {
         // picture as hidden from here, so the engine stops decoding it.
         if ctx.input(|i| i.viewport().visible() == Some(false)) {
             self.report_video_target(ctx);
+            self.keep_awake(false);
         }
     }
 
@@ -570,6 +573,7 @@ impl eframe::App for PulseApp {
         self.sign_in_window(&ctx);
 
         self.report_video_target(&ctx);
+        self.keep_awake(state.status == Status::Playing && self.sent_target.is_some());
         self.persist(&state, false);
 
         // Animate the clock while something is playing; otherwise stay idle.
@@ -577,7 +581,6 @@ impl eframe::App for PulseApp {
             ctx.request_repaint_after(Duration::from_millis(if self.frame_target.is_some() { 33 } else { 200 }));
         }
     }
-
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let state = self.engine.state();

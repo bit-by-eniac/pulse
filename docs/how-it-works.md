@@ -2,23 +2,23 @@
 
 ## What it needs at runtime
 
-Pulse does not reimplement video decoding or YouTube. It drives three well-known tools:
+Pulse does not reimplement video decoding or YouTube. It drives well-known tools:
 
-| Tool | Used for | Install |
+| Tool | Used for | Where it comes from |
 | --- | --- | --- |
-| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | searching and finding the streams | downloaded by the app on first run (Settings) |
-| [mpv](https://mpv.io) | audio playback, seeking, volume | `brew install mpv` / `winget install mpv` / `apt install mpv` |
-| [ffmpeg](https://ffmpeg.org) | decoding video frames (video mode only) | `brew install ffmpeg` / `winget install ffmpeg` / `apt install ffmpeg` |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | searching and finding the streams | downloaded by the app on first run, updated from Settings |
+| [mpv](https://mpv.io) | audio playback, seeking, volume, the OS media controls | in the macOS and Windows packages; the `.deb` installs it |
+| [ffmpeg](https://ffmpeg.org) | decoding video frames (video mode only) | as mpv |
+| [QuickJS](https://github.com/quickjs-ng/quickjs) | the JavaScript yt-dlp needs for YouTube | in every package |
 
-yt-dlp also needs a JavaScript runtime for YouTube nowadays: [deno](https://deno.com), node, bun, or QuickJS
-(`qjs`, used last: tiny, but each lookup takes ~5 s longer). The app checks all of this and tells you what is
-missing. Tools are found in the app data folder, next to the executable (also in a `tools/` folder), on `PATH`,
-and in the usual Homebrew/winget/scoop locations.
+The macOS and Windows packages carry mpv, ffmpeg and QuickJS, built by `scripts/build-tools.sh` with only what
+Pulse uses (14–16 MB together instead of ~250 MB for the usual builds): ffmpeg decodes H.264 and VP9 only, and on
+macOS on the graphics chip; mpv plays sound only (no scripts, no video output) but keeps the OS media controls.
+Their licences and source links are in `LICENSES/` next to them.
 
-The **-full** packages for macOS and Windows carry mpv, ffmpeg and QuickJS, built by `scripts/build-tools.sh`
-with only what Pulse uses (14–16 MB together instead of ~250 MB for the usual builds): ffmpeg decodes H.264 and
-VP9 only, mpv plays sound only (no scripts, no video output) but keeps the OS media controls. Their licences and source links are in
-`LICENSES/` next to them. The Linux packages carry QuickJS only; the `.deb` gets mpv and ffmpeg from the distro.
+Installed tools work too: Pulse looks in the app data folder, next to the executable (also in a `tools/`
+folder), on `PATH`, and in the usual Homebrew/winget/scoop locations. Of the JavaScript runtimes it prefers
+[deno](https://deno.com), node or bun when one is installed: QuickJS makes each lookup a few seconds slower.
 
 ## When YouTube breaks
 
@@ -64,6 +64,12 @@ src/app/        egui UI: layout tiers, controls, browse, queue, settings
 - The engine runs on its own thread, so the queue keeps advancing while the window is hidden.
 - Video frames are paced against mpv's audio clock; the decoder only runs while the picture is visible
   and at the size it is shown at, so RAM and CPU stay low. Audio-only mode starts no decoder at all.
+- On macOS the graphics chip decodes H.264 and VP9 and scales the picture (VideoToolbox); elsewhere, and for
+  what the chip cannot decode, ffmpeg does it in software. Either way ffmpeg hands over NV12 frames (1.5 bytes
+  a pixel) and a small shader turns them into colour as they are drawn (`app/picture.rs`).
+- A picture that cannot keep up although its data is there (a busy computer) steps down to a smaller size on
+  Auto. While video plays on screen, Pulse keeps the display awake and, on macOS, out of App Nap, which would
+  otherwise draw a window that is not in front at a third of the frame rate.
   After a resize (or quality change) a second decoder starts slightly ahead of playback, and the old one keeps
   showing until the new one is in step, so the picture never stalls (`cargo run --release --example resize` measures it).
 - The app downloads the sound and the picture itself, in bounded pieces, and hands them to mpv and ffmpeg
@@ -85,7 +91,7 @@ src/app/        egui UI: layout tiers, controls, browse, queue, settings
 
 ```sh
 cargo run --release            # run
-scripts/build-macos.sh local   # Pulse.app + .dmg for this Mac (arm64|x86_64|universal|all also work)
+scripts/build-macos.sh local   # Pulse.app + .dmg for this Mac (arm64|x86_64|all also work)
 scripts/build-linux.sh         # .tar.gz (+ .deb with cargo-deb)
 powershell scripts\build-windows.ps1
 ```
@@ -93,15 +99,14 @@ powershell scripts\build-windows.ps1
 Outputs land in `dist/`.
 
 **Releases:** a push to `main` builds and publishes a release for the version in `Cargo.toml`, unless that
-version has one already: raise the version for a new release. It builds macOS (arm64 + universal dmg),
-Windows x64 (zip), each also as -full, and Linux x86_64 + aarch64 (tar.gz + deb). The tools for the -full
-packages are cached until `scripts/build-tools.sh` changes; if they fail to build, the release goes out
-without the -full packages. Actions → **Release** → Run workflow does the same by hand (a draft by
-default), and so does pushing a `v*` tag.
+version has one already: raise the version for a new release. It builds macOS (Apple silicon and Intel dmg),
+Windows x64 (zip) and Linux x86_64 + aarch64 (tar.gz + deb). The tools for the macOS and Windows packages are
+cached until `scripts/build-tools.sh` changes. Actions → **Release** → Run workflow does the same by hand (a
+draft by default), and so does pushing a `v*` tag.
 
-The -full packages by hand: `scripts/build-tools.sh macos-arm64` (and `macos-x86_64`), then
-`scripts/build-macos.sh all full`; on Windows `scripts/build-tools.sh windows-x64` in an MSYS2 UCRT64 shell,
-then `scripts\build-windows.ps1 -Full`.
+By hand: `scripts/build-tools.sh macos-arm64` (and `macos-x86_64`; needs meson, ninja, pkg-config, and nasm for
+Intel), then `scripts/build-macos.sh all`; on Windows `scripts/build-tools.sh windows-x64` in an MSYS2 UCRT64
+shell, then `scripts\build-windows.ps1`.
 
 macOS builds are ad-hoc signed, not notarized. After downloading, if macOS says the app is damaged:
 `xattr -dr com.apple.quarantine /Applications/Pulse.app`. Set `MACOS_SIGN_IDENTITY` to sign properly.

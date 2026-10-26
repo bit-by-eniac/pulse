@@ -87,6 +87,18 @@ pub fn tls_config() -> ureq::tls::TlsConfig {
         .build()
 }
 
+/// Keeps the display on. The setting belongs to the calling thread, the UI's.
+pub fn keep_awake(on: bool) {
+    use windows_sys::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED};
+    // SAFETY: a plain call taking flags.
+    unsafe { SetThreadExecutionState(if on { ES_CONTINUOUS | ES_DISPLAY_REQUIRED } else { ES_CONTINUOUS }) };
+}
+
+/// Software decoding for now: the bundled ffmpeg has no D3D11 decoding.
+pub fn gpu_video(_codec: &str) -> Option<super::GpuVideo> {
+    None
+}
+
 /// mpv shows the playing track in Windows' media overlay; give it Pulse's icon
 /// rather than its own large one, which it re-encodes on every update.
 pub fn now_playing_cover() -> Option<PathBuf> {

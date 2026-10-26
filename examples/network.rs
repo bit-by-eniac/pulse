@@ -1,7 +1,7 @@
 //! Plays a track through a slow, changing network and measures what the listener
 //! and viewer get: start-up time, audio stalls, frozen picture, video quality.
 //!
-//! cargo run --release --example network -- <schedule> [--audio] [--link URL] [--size WxH] [--out DIR] [--rtt MS] [--seek T=POS] [--pause T=SECS]
+//! cargo run --release --example network -- <schedule> [--audio] [--link URL] [--size WxH] [--out DIR] [--rtt MS] [--seek T=POS] [--pause T=SECS] [--quality H] [--speakers] [--mpv-arg ARG]
 //!
 //! `<schedule>` is link speeds with how long each lasts, e.g. `100k@90` or
 //! `10M@40,500k@40,10M@40` (bits per second; `0` is an outage). The last speed
@@ -9,6 +9,9 @@
 //! `scripts/netsim.py` (needs python3): yt-dlp, mpv and ffmpeg all share the link.
 //! `--seek 40=300` jumps to 5:00 at 40 s into the run, `--pause 40=20` pauses for
 //! 20 s there; the summary says how long sound and picture took to come back.
+//! `--quality 1080` fixes the video height (default Auto). `--speakers` plays
+//! through the sound device with the OS media controls on, as the app does, but
+//! at volume 0. `--mpv-arg` adds an mpv option (repeatable).
 use pulse::config::{Config, Mode};
 use pulse::engine::{self, Cmd, Status};
 use pulse::provider::{ytdlp::YtDlp, Input, Provider};
@@ -44,6 +47,9 @@ struct Args {
     rtt: f64,
     /// (at, action): seek to a position, or pause for a while.
     events: Vec<(f64, Event)>,
+    quality: Option<u32>,
+    speakers: bool,
+    mpv_args: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -59,7 +65,7 @@ fn event(spec: &str, make: fn(f64) -> Event) -> (f64, Event) {
 
 fn args() -> Args {
     let mut it = std::env::args().skip(1);
-    let schedule = it.next().expect("usage: network <schedule> [--audio] [--link URL] [--size WxH] [--out DIR] [--rtt MS] [--seek T=POS] [--pause T=SECS]");
+    let schedule = it.next().expect("usage: network <schedule> [--audio] [--link URL] [--size WxH] [--out DIR] [--rtt MS] [--seek T=POS] [--pause T=SECS] [--quality H] [--speakers] [--mpv-arg ARG]");
     let schedule = schedule
         .split(',')
         .map(|part| {
@@ -75,6 +81,9 @@ fn args() -> Args {
         out: std::env::temp_dir().join("pulse-network"),
         rtt: 60.0,
         events: Vec::new(),
+        quality: None,
+        speakers: false,
+        mpv_args: Vec::new(),
     };
     while let Some(flag) = it.next() {
         match flag.as_str() {
@@ -89,6 +98,9 @@ fn args() -> Args {
             "--rtt" => a.rtt = it.next().unwrap().parse().unwrap(),
             "--seek" => a.events.push(event(&it.next().unwrap(), Event::Seek)),
             "--pause" => a.events.push(event(&it.next().unwrap(), Event::Pause)),
+            "--quality" => a.quality = Some(it.next().unwrap().parse().unwrap()),
+            "--speakers" => a.speakers = true,
+            "--mpv-arg" => a.mpv_args.push(it.next().unwrap()),
             other => panic!("unknown option {other}"),
         }
     }
@@ -152,10 +164,12 @@ fn main() {
 
     let provider: Arc<dyn Provider> = Arc::new(YtDlp::new(vec!["--proxy".into(), proxy.clone()]));
     let Input::Track(track) = provider.parse_input(&a.link) else { panic!("not a video link") };
+    let mut mpv_args: Vec<String> = if a.speakers { vec!["--volume=0".into()] } else { vec!["--ao=null".into(), "--media-controls=no".into(), "--input-media-keys=no".into()] };
+    mpv_args.extend(a.mpv_args.iter().cloned());
     let cfg = Config {
-        mpv_args: vec!["--ao=null".into(), "--media-controls=no".into(), "--input-media-keys=no".into()],
+        mpv_args,
         mode: if a.audio { Mode::Audio } else { Mode::Video },
-        quality: None,
+        quality: a.quality,
         ..Default::default()
     };
     let eng = engine::start(provider, &cfg, Arc::new(|| {}));

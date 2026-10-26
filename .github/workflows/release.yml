@@ -53,8 +53,8 @@ jobs:
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
 
-  # mpv, ffmpeg and QuickJS for the -full packages (scripts/build-tools.sh), kept in
-  # the cache until the script changes. A failure here only leaves those packages out.
+  # mpv, ffmpeg and QuickJS for the macOS and Windows packages (scripts/build-tools.sh),
+  # kept in the cache until the script changes.
   tools:
     name: Tools (${{ matrix.target }})
     needs: plan
@@ -99,9 +99,9 @@ jobs:
           path: dist/tools-${{ matrix.target }}
 
   macos:
-    name: macOS (arm64 + universal)
+    name: macOS (Apple silicon + Intel)
     needs: [plan, tools]
-    if: always() && needs.plan.outputs.build == 'true'
+    if: needs.plan.outputs.build == 'true'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -110,18 +110,13 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           pattern: tools-macos-*
           path: dist
-      # Artifacts lose the executable bit. Without both tool sets, only the usual packages.
+      # Artifacts lose the executable bit.
       - run: |
-          if [[ -f dist/tools-macos-arm64/mpv && -f dist/tools-macos-x86_64/mpv ]]; then
-            chmod +x dist/tools-macos-*/{mpv,ffmpeg,qjs}
-            scripts/build-macos.sh all full
-          else
-            scripts/build-macos.sh all
-          fi
+          chmod +x dist/tools-macos-*/{mpv,ffmpeg,qjs}
+          scripts/build-macos.sh all
       - uses: actions/upload-artifact@v4
         with:
           name: macos
@@ -130,23 +125,17 @@ jobs:
   windows:
     name: Windows (x64)
     needs: [plan, tools]
-    if: always() && needs.plan.outputs.build == 'true'
+    if: needs.plan.outputs.build == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           name: tools-windows-x64
           path: dist/tools-windows-x64
-      - run: |
-          if (Test-Path dist\tools-windows-x64\mpv.exe) {
-            powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Full
-          } else {
-            powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
-          }
+      - run: powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: windows
@@ -179,10 +168,7 @@ jobs:
 
   publish:
     needs: [plan, macos, windows, linux]
-    # The usual packages must all be there; the -full ones may be missing.
-    if: >-
-      always() && needs.plan.outputs.build == 'true' &&
-      needs.macos.result == 'success' && needs.windows.result == 'success' && needs.linux.result == 'success'
+    if: needs.plan.outputs.build == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -203,4 +189,4 @@ jobs:
           [[ "$PRERELEASE" == "true" ]] && FLAGS+=(--prerelease)
           ls -la artifacts
           gh release create "$TAG" artifacts/* --title "Pulse $TAG" --target "$GITHUB_SHA" \
-            --notes "The -full downloads (macOS, Windows) include mpv, ffmpeg and QuickJS: nothing else to install. The others need mpv and ffmpeg; the Linux .deb installs them. Pulse fetches yt-dlp itself. See the README." "${FLAGS[@]}"
+            --notes "macOS: apple-silicon (M1 and later) or intel. The macOS and Windows downloads carry everything Pulse needs; the Linux .deb installs mpv and ffmpeg with it. Pulse fetches yt-dlp itself. See the README." "${FLAGS[@]}"

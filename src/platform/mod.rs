@@ -122,6 +122,30 @@ pub fn now_playing_cover() -> Option<PathBuf> {
     imp::now_playing_cover()
 }
 
+/// How ffmpeg can decode a stream of `codec` ("avc1", "vp9", ...) on the graphics
+/// chip and scale it there, when this computer's chip decodes that codec. The CPU
+/// then only converts the finished, shown-size picture.
+pub fn gpu_video(codec: &str) -> Option<GpuVideo> {
+    imp::gpu_video(codec)
+}
+
+/// While a picture plays on screen: keeps the display awake and, on macOS, the app
+/// out of App Nap, which draws a window that is not in front at a third of the
+/// frame rate (the sound plays in mpv, so it does not count as playing media).
+/// Called from the UI thread.
+pub fn keep_awake(on: bool) {
+    imp::keep_awake(on)
+}
+
+pub struct GpuVideo {
+    /// ffmpeg's `-hwaccel`.
+    pub hwaccel: &'static str,
+    /// Its frames' format on the chip (`-hwaccel_output_format`).
+    pub frames: &'static str,
+    /// The filter that scales those frames there.
+    pub scale: &'static str,
+}
+
 /// Writes `bytes` to `name` in the data folder unless it is already there.
 #[allow(dead_code)] // not every OS needs one
 fn cached_file(name: &str, bytes: &[u8]) -> Option<PathBuf> {

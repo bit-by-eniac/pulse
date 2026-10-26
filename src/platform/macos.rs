@@ -1,6 +1,7 @@
 pub use super::unix::*;
 use super::Script;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 pub const YTDLP_RELEASE: (&str, &str) = ("yt-dlp_macos.zip", "yt-dlp_macos");
 pub const INSTALL_HINT: &str = "brew install mpv ffmpeg";
@@ -51,6 +52,62 @@ pub fn tls_config() -> ureq::tls::TlsConfig {
 /// re-encodes leave hundreds of MB behind, so it gets a small one.
 pub fn now_playing_cover() -> Option<PathBuf> {
     super::cached_file("now-playing.png", include_bytes!("../../assets/icon-64.png"))
+}
+
+/// VideoToolbox, for the codecs the Mac decodes in hardware: H.264 on every Mac
+/// Pulse runs on, VP9 on Apple silicon. Asked once per codec.
+pub fn gpu_video(codec: &str) -> Option<super::GpuVideo> {
+    let fourcc = match codec {
+        c if c.starts_with("avc1") => *b"avc1",
+        c if c.starts_with("vp9") || c.starts_with("vp09") => *b"vp09",
+        _ => return None,
+    };
+    static KNOWN: Mutex<Vec<([u8; 4], bool)>> = Mutex::new(Vec::new());
+    let mut known = KNOWN.lock().unwrap();
+    let hardware = match known.iter().find(|(c, _)| *c == fourcc) {
+        Some(&(_, hardware)) => hardware,
+        None => {
+            let kind = u32::from_be_bytes(fourcc);
+            // SAFETY: plain C functions taking a codec's four-character code. VP9's
+            // decoder is a supplemental one, there only once registered.
+            let hardware = unsafe {
+                VTRegisterSupplementalVideoDecoderIfAvailable(kind);
+                VTIsHardwareDecodeSupported(kind) != 0
+            };
+            known.push((fourcc, hardware));
+            hardware
+        }
+    };
+    hardware.then_some(super::GpuVideo { hwaccel: "videotoolbox", frames: "videotoolbox_vld", scale: "scale_vt" })
+}
+
+pub fn keep_awake(on: bool) {
+    use objc2::rc::Retained;
+    use objc2::runtime::{NSObjectProtocol, ProtocolObject};
+    use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+    thread_local! {
+        static ACTIVITY: std::cell::RefCell<Option<Retained<ProtocolObject<dyn NSObjectProtocol>>>> = const { std::cell::RefCell::new(None) };
+    }
+    ACTIVITY.with_borrow_mut(|activity| {
+        let info = NSProcessInfo::processInfo();
+        match activity.take() {
+            None if on => {
+                let options = NSActivityOptions::UserInitiatedAllowingIdleSystemSleep
+                    | NSActivityOptions::LatencyCritical
+                    | NSActivityOptions::IdleDisplaySleepDisabled;
+                *activity = Some(info.beginActivityWithOptions_reason(options, &NSString::from_str("Playing video")));
+            }
+            // SAFETY: the object `beginActivity` returned.
+            Some(started) if !on => unsafe { info.endActivity(&started) },
+            kept => *activity = kept,
+        }
+    });
+}
+
+#[link(name = "VideoToolbox", kind = "framework")]
+extern "C" {
+    fn VTIsHardwareDecodeSupported(codec_type: u32) -> u8;
+    fn VTRegisterSupplementalVideoDecoderIfAvailable(codec_type: u32);
 }
 
 /// None: the Dock shows the app bundle's icon, which is sharper than any set at runtime.

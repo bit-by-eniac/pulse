@@ -97,11 +97,10 @@ impl PulseApp {
         let mut showing_video = false;
         if state.mode == Mode::Video {
             self.frame_target = Some(((rect.width() * ppp) as u32, (rect.height() * ppp) as u32));
-            if let Some(tex) = &self.video_tex {
-                let size = tex.size_vec2();
+            if let Some([w, h]) = self.picture.size() {
+                let size = vec2(w as f32, h as f32);
                 let scale = (rect.width() / size.x).min(rect.height() / size.y);
-                let shown = Rect::from_center_size(rect.center(), size * scale);
-                p.image(tex.id(), shown, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                self.picture.paint(&p, Rect::from_center_size(rect.center(), size * scale));
                 showing_video = true;
             }
         }

@@ -28,6 +28,8 @@ const LOOKUP_BITS: f64 = 880.0 * 1024.0 * 8.0;
 const LOOKUP_OVERHEAD: f64 = 2.5;
 /// Lookups quicker than this say nothing useful about the line.
 const LOOKUP_SLOW: Duration = Duration::from_secs(8);
+/// QuickJS solves the challenges this much slower than deno or node (seconds).
+const QUICKJS_EXTRA: f64 = 4.0;
 /// Once YouTube has refused an anonymous request, sign in right away for this long
 /// instead of paying for another refusal first.
 const STAY_SIGNED_IN: Duration = Duration::from_secs(30 * 60);
@@ -216,9 +218,10 @@ impl Provider for YtDlp {
         let started = Instant::now();
         let json = self.run_json(&["-J", "--no-playlist", &track.url])?;
         let mut resolved = parse_resolved(&json, track)?;
-        let took = started.elapsed();
-        if took > LOOKUP_SLOW {
-            resolved.line_hint = Some(LOOKUP_BITS / (took.as_secs_f64() - LOOKUP_OVERHEAD).max(0.5));
+        let quickjs = Self::js_runtime_args().iter().any(|a| a.starts_with("quickjs:"));
+        let took = started.elapsed().as_secs_f64() - if quickjs { QUICKJS_EXTRA } else { 0.0 };
+        if took > LOOKUP_SLOW.as_secs_f64() {
+            resolved.line_hint = Some(LOOKUP_BITS / (took - LOOKUP_OVERHEAD).max(0.5));
         }
         Ok(resolved)
     }
@@ -736,8 +739,8 @@ fn parse_resolved(json: &Value, requested: &Track) -> Result<Resolved> {
         }
     }
 
-    // Video: video-only streams when they exist, single files over HLS, and no
-    // more than the 30 frames per second the app shows. Per height, the cheapest
+    // Video: video-only streams when they exist, single files over HLS, no more
+    // than the 30 frames per second the app shows, and SDR. Per height, the cheapest
     // codec to decode (highest bitrate of it), plus the smallest stream in another
     // codec when that saves a good part: on a slow connection a taller picture in
     // VP9 beats a shorter one in H.264. AV1 only when there is nothing else (it is
@@ -754,6 +757,8 @@ fn parse_resolved(json: &Value, requested: &Track) -> Result<Resolved> {
     for (height, formats) in by_height {
         let formats = keep_if(formats, |f| !segmented(f));
         let formats = keep_if(formats, |f| fl(f, "fps").is_none_or(|fps| fps <= 31.0));
+        // HDR would need tone mapping to look right on the way to RGB.
+        let formats = keep_if(formats, |f| s(f, "dynamic_range").is_none_or(|d| d == "SDR"));
         let rate = |f: &Value| bitrate(f).unwrap_or(0.0);
         let Some(cheap) = formats.iter().copied().min_by(|a, b| {
             (codec_rank(&vcodec(a)), -rate(a)).partial_cmp(&(codec_rank(&vcodec(b)), -rate(b))).unwrap_or(std::cmp::Ordering::Equal)
@@ -1030,6 +1035,20 @@ mod tests {
         assert_eq!(video, [(1080, "vp9", false), (1080, "avc1", false)]);
         assert!(r.video[1].url.ends_with("itag=137"));
         assert_eq!(r.expires_at, Some(std::time::UNIX_EPOCH + Duration::from_secs(1792771700)));
+    }
+
+    #[test]
+    fn prefers_sdr() {
+        let json: Value = serde_json::from_str(
+            r#"{"id":"x","title":"Video","formats":[
+                {"format_id":"251","protocol":"https","url":"https://r/251","acodec":"opus","vcodec":"none","abr":147},
+                {"format_id":"271","protocol":"https","url":"https://r/271","acodec":"none","vcodec":"vp9","height":1440,"width":2560,"tbr":9000,"dynamic_range":"SDR"},
+                {"format_id":"337","protocol":"https","url":"https://r/337","acodec":"none","vcodec":"vp09.02.51.10.01.09.16.09.00","height":1440,"width":2560,"tbr":12000,"dynamic_range":"HDR10"}]}"#,
+        )
+        .unwrap();
+        let Input::Track(track) = parse_input("https://youtu.be/dQw4w9WgXcQ") else { panic!() };
+        let urls: Vec<_> = parse_resolved(&json, &track).unwrap().video.into_iter().map(|v| v.url).collect();
+        assert_eq!(urls, ["https://r/271"]);
     }
 
     #[test]
