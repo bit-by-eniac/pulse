@@ -1,6 +1,8 @@
 name: Release
 
-# Run it from the Actions tab ("Run workflow"), or push a tag like v0.1.0.
+# A push to main releases the version in Cargo.toml if it has no release yet: raise
+# the version for a new one. Also runs from the Actions tab ("Run workflow") or for
+# a pushed tag like v0.1.0.
 on:
   workflow_dispatch:
     inputs:
@@ -17,14 +19,44 @@ on:
         type: boolean
         default: false
   push:
+    branches: [main]
     tags: ["v*"]
 
 permissions:
   contents: write
 
+# One at a time: a run queued behind another sees its release and stops.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      build: ${{ steps.tag.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then TAG="$GITHUB_REF_NAME"; else TAG="${INPUT_TAG:-v$VERSION}"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG exists already, nothing to build. Raise the version in Cargo.toml for a new one."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
   macos:
     name: macOS (arm64 + universal)
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +72,8 @@ jobs:
 
   windows:
     name: Windows (x64)
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +87,8 @@ jobs:
 
   linux:
     name: Linux (${{ matrix.arch }})
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     strategy:
       matrix:
         include:
@@ -75,7 +111,7 @@ jobs:
             dist/*.deb
 
   publish:
-    needs: [macos, windows, linux]
+    needs: [plan, macos, windows, linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -83,18 +119,17 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      # Pushes publish at once; a run from the Actions tab makes a draft unless told otherwise.
       - name: Create the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INPUT_TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.plan.outputs.tag }}
           DRAFT: ${{ inputs.draft }}
           PRERELEASE: ${{ inputs.prerelease }}
         run: |
-          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then TAG="$GITHUB_REF_NAME"; else TAG="${INPUT_TAG:-v$VERSION}"; fi
           FLAGS=()
           [[ "$DRAFT" == "true" ]] && FLAGS+=(--draft)
           [[ "$PRERELEASE" == "true" ]] && FLAGS+=(--prerelease)
           ls -la artifacts
           gh release create "$TAG" artifacts/* --title "Pulse $TAG" --target "$GITHUB_SHA" \
-            --notes "Needs mpv, ffmpeg and yt-dlp at runtime. See the README for setup." "${FLAGS[@]}"
+            --notes "Needs mpv, ffmpeg and deno installed; Pulse fetches yt-dlp itself. See the README for setup." "${FLAGS[@]}"
