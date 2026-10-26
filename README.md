@@ -35,3 +35,7 @@ cargo run --release
 A push to `main` releases the version in `Cargo.toml` if it has no release yet.
 
 More: [how it works](docs/how-it-works.md).
+
+## Licence
+
+[MIT](LICENSE). The mpv, ffmpeg and QuickJS inside the packages keep their own licences (GPL, LGPL, MIT); they are in `LICENSES/` next to them, with links to their source.
