@@ -11,6 +11,7 @@ pub const YTDLP_RELEASE: (&str, &str) = ("yt-dlp_linux.zip", "yt-dlp_linux");
 pub const INSTALL_HINT: &str = "sudo apt install mpv ffmpeg   (or your distro's equivalent)";
 pub const COMMAND_KEY: &str = "Ctrl";
 pub const COOKIE_PERMISSION_HINT: &str = "Check that your user can read the browser\u{2019}s profile folder.";
+pub const MPV_AUDIO_OPTIONS: &[&str] = &[];
 
 /// Where mpv's socket goes: the per-user runtime folder when there is one.
 pub fn runtime_dir() -> PathBuf {

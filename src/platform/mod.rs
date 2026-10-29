@@ -96,6 +96,11 @@ pub fn command_key() -> &'static str {
     imp::COMMAND_KEY
 }
 
+/// mpv options this OS's audio output needs.
+pub fn mpv_audio_options() -> &'static [&'static str] {
+    imp::MPV_AUDIO_OPTIONS
+}
+
 /// An HTTPS client. macOS and Windows use the system's TLS; Linux uses rustls.
 pub fn http_agent(timeout: Option<std::time::Duration>) -> ureq::Agent {
     ureq::Agent::config_builder().tls_config(imp::tls_config()).timeout_global(timeout).build().into()

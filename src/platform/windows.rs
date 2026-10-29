@@ -14,6 +14,7 @@ pub const YTDLP_RELEASE: (&str, &str) = ("yt-dlp_win.zip", "yt-dlp.exe");
 pub const COOKIE_PERMISSION_HINT: &str = "Close the browser and try again.";
 pub const COMMAND_KEY: &str = "Ctrl";
 pub const INSTALL_HINT: &str = "winget install mpv ffmpeg   (or: scoop install mpv ffmpeg)";
+pub const MPV_AUDIO_OPTIONS: &[&str] = &[];
 
 /// mpv serves JSON IPC on a named pipe; a pipe opens like a plain file.
 pub type IpcConn = File;

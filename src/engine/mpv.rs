@@ -217,6 +217,7 @@ fn launch(mpv: &Path, extra_args: &[String], volume: f32, muted: bool, endpoint:
         "--audio-client-name=Pulse",
         "--title=Pulse",
     ])
+    .args(platform::mpv_audio_options())
     .arg(format!("--volume={}", (volume * 100.0).round()))
     .arg(format!("--mute={}", if muted { "yes" } else { "no" }))
     .arg({

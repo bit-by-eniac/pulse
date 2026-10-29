@@ -8,6 +8,13 @@ pub const INSTALL_HINT: &str = "brew install mpv ffmpeg";
 pub const COMMAND_KEY: &str = "Cmd";
 pub const COOKIE_PERMISSION_HINT: &str =
     "Allow it when macOS asks, or turn on Full Disk Access for Pulse in System Settings \u{203a} Privacy & Security.";
+/// Interleaved stereo for mpv's Core Audio output. On macOS 27 Core Audio refuses
+/// planar formats (what Opus decodes to) and mono with "unable to set the input
+/// channel layout (-50)", and mpv 0.41 falls back to AVFoundation. That failed start
+/// leaves a device listener on freed memory (mpv#18274), so the next device change
+/// (a phone call taking the AirPods, headphones connecting) crashed mpv; the
+/// AVFoundation output also once left a CoreMedia thread spinning at 100% CPU.
+pub const MPV_AUDIO_OPTIONS: &[&str] = &["--audio-format=float", "--audio-channels=stereo"];
 
 /// Where mpv's socket goes: the per-user temporary folder.
 pub fn runtime_dir() -> PathBuf {
